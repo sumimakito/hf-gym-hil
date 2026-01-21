@@ -1,3 +1,19 @@
+# gym-hil for SO-ARM101
+
+## Set up
+
+```bash
+git submodule update --init
+```
+
+## Control with keyboard on macOS
+
+```bash
+python examples/test_teleoperation.py --use-keyboard
+```
+
+---
+
 # gym-hil
 
 A collection of gymnasium environments for Human-In-the-Loop (HIL) reinforcement learning, compatible with Hugging Face's LeRobot codebase.
