@@ -44,6 +44,7 @@ def main():
     parser.add_argument(
         "--render-mode", type=str, default="human", choices=["human", "rgb_array"], help="Rendering mode"
     )
+    parser.add_argument("--use-keyboard", action="store_true", help="Use keyboard control")
     parser.add_argument(
         "--reset-delay",
         type=float,
