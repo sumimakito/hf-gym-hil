@@ -1,11 +1,5 @@
 # gym-hil for SO-ARM101
 
-## Set up
-
-```bash
-git submodule update --init
-```
-
 ## Control with keyboard on macOS
 
 ```bash
