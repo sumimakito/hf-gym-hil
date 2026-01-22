@@ -15,6 +15,8 @@
 # limitations under the License.
 
 import argparse
+import select
+import sys
 import time
 from pathlib import Path
 
@@ -138,6 +140,25 @@ def _print_keyboard_help(joint_names: list[str], step_size: float) -> None:
     )
 
 
+def _parse_stdin_joint_command(line: str, joint_count: int) -> np.ndarray | None:
+    parts = line.strip().split()
+    if not parts:
+        return None
+    if parts[0].upper() == "J":
+        parts = parts[1:]
+    if len(parts) == joint_count + 1:
+        parts = parts[1:]
+    if len(parts) != joint_count:
+        return None
+    try:
+        values = np.asarray([float(v) for v in parts], dtype=np.float32)
+    except ValueError:
+        return None
+    if values.shape[0] != joint_count:
+        return None
+    return values
+
+
 class SO101GymEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 25}
 
@@ -213,6 +234,11 @@ def main():
     parser.add_argument(
         "--controller-config", type=str, default=None, help="Path to controller configuration JSON file"
     )
+    parser.add_argument(
+        "--stdin-control",
+        action="store_true",
+        help="Accept absolute joint positions (radians) from stdin lines",
+    )
     args = parser.parse_args()
 
     # Mode selection based on --use-keyboard flag
@@ -262,6 +288,14 @@ def main():
         cam.distance = 0.8
         cam.lookat = np.array([0.0, 0.0, 0.15])
         _print_keyboard_help(joint_names, args.step_size)
+        if args.stdin_control:
+            print(
+                "STDIN control enabled. Send lines like:\n"
+                "  J <t_ms> <q1> <q2> ... <qN>\n"
+                "or:\n"
+                "  J <q1> <q2> ... <qN>\n"
+                "Values are absolute joint positions in radians."
+            )
 
         try:
             controller.start()
@@ -273,11 +307,26 @@ def main():
                 if action.shape[0] < action_dim:
                     action = np.pad(action, (0, action_dim - action.shape[0]))
 
-                delta = controller.delta()
-                if delta != 0.0:
-                    action = _apply_joint_delta(action, controller.joint_index, delta, joint_ranges)
-                else:
-                    action = _clamp_action(action, joint_ranges)
+                if args.stdin_control:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.0)
+                    if ready:
+                        line = sys.stdin.readline()
+                        stdin_action = _parse_stdin_joint_command(line, action_dim)
+                        if stdin_action is not None:
+                            action = stdin_action
+                            last_action = action
+                            action = _clamp_action(action, joint_ranges)
+                        else:
+                            action = _clamp_action(action, joint_ranges)
+                    else:
+                        action = _clamp_action(action, joint_ranges)
+                
+                if not args.stdin_control:
+                    delta = controller.delta()
+                    if delta != 0.0:
+                        action = _apply_joint_delta(action, controller.joint_index, delta, joint_ranges)
+                    else:
+                        action = _clamp_action(action, joint_ranges)
 
                 obs, reward, terminated, truncated, info = env.step(action.tolist())
                 last_action = action
