@@ -1,4 +1,0 @@
-[submodule "submodules/SO-ARM100"]
-	path = submodules/SO-ARM100
-	url = https://github.com/TheRobotStudio/SO-ARM100
-	shallow = true

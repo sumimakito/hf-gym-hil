@@ -31,7 +31,7 @@ except ImportError:
     print("GLFW not found. Please `pip install glfw`")
     exit(1)
 
-SO101_SCENE_PATH = Path(__file__).resolve().parents[1] / "submodules" / "SO-ARM100" / "Simulation" / "SO101" / "scene.xml"
+SO101_SCENE_PATH = Path(__file__).resolve().parents[1] / "models" / "SO-ARM100" / "Simulation" / "SO101" / "scene.xml"
 SO101_ENV_ID = "gym_hil/SO101KeyboardBase-v0"
 
 
