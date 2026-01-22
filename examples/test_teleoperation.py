@@ -31,8 +31,13 @@ except ImportError:
     print("GLFW not found. Please `pip install glfw`")
     exit(1)
 
-SO101_SCENE_PATH = Path(__file__).resolve().parents[1] / "models" / "SO-ARM100" / "Simulation" / "SO101" / "scene.xml"
+# Utility for manual keyboard control mode (Franka)
+from gym_hil.wrappers.intervention_utils import MuJoCoViewerController
+
+SO101_SCENE_PATH = Path(__file__).resolve().parents[1] / "models" / "SO101" / "scene.xml"
 SO101_ENV_ID = "gym_hil/SO101KeyboardBase-v0"
+CLAW_MACHINE_SCENE_PATH = Path(__file__).resolve().parents[1] / "models" / "claw_machine" / "scene.xml"
+CLAW_MACHINE_ENV_ID = "gym_hil/ClawMachineKeyboardBase-v0"
 
 
 def register_so101_env() -> str:
@@ -42,9 +47,30 @@ def register_so101_env() -> str:
         register(
             id=SO101_ENV_ID,
             entry_point=SO101GymEnv,
-            max_episode_steps=5000,
+            max_episode_steps=1000000,
         )
     return SO101_ENV_ID
+
+
+def register_claw_machine_env() -> str:
+    from gymnasium.envs.registration import register, registry
+
+    if CLAW_MACHINE_ENV_ID not in registry:
+        register(
+            id=CLAW_MACHINE_ENV_ID,
+            entry_point=ClawMachineGymEnv,
+            max_episode_steps=5000,
+        )
+    return CLAW_MACHINE_ENV_ID
+
+
+def gripper_scalar(cmd: str) -> float:
+    """Maps gripper command to the action space in manual mode."""
+    if cmd == "open":
+        return -1.0
+    if cmd == "close":
+        return 1.0
+    return 0.0
 
 
 def _joint_ranges_and_names(model) -> tuple[list[tuple[float, float]], list[str]]:
@@ -127,6 +153,139 @@ class SO101KeyboardController:
         self.quit_requested = False
 
 
+class ClawMachineKeyboardController:
+    def __init__(self, window, step_size: float, grip_step_size: float):
+        self.window = window
+        self.step_size = step_size
+        self.grip_step_size = grip_step_size
+        self.quit_requested = False
+        self.key_states = {
+            "x_pos": False,
+            "x_neg": False,
+            "y_pos": False,
+            "y_neg": False,
+            "z_up": False,
+            "z_down": False,
+            "grip_close": False,
+            "grip_open": False,
+        }
+        self.key_map = {
+            glfw.KEY_W: "y_pos",
+            glfw.KEY_S: "y_neg",
+            glfw.KEY_D: "x_pos",
+            glfw.KEY_A: "x_neg",
+            glfw.KEY_Q: "z_up",
+            glfw.KEY_E: "z_down",
+            glfw.KEY_LEFT_BRACKET: "grip_close",
+            glfw.KEY_RIGHT_BRACKET: "grip_open",
+        }
+
+    def start(self):
+        glfw.set_key_callback(self.window, self._key_callback)
+
+    def stop(self):
+        if self.window:
+            glfw.set_key_callback(self.window, None)
+
+    def _key_callback(self, window, key, scancode, act, mods):
+        is_press = act in (glfw.PRESS, glfw.REPEAT)
+        if key == glfw.KEY_ESCAPE and is_press:
+            self.quit_requested = True
+            glfw.set_window_should_close(window, 1)
+            return
+        if key in self.key_map:
+            self.key_states[self.key_map[key]] = is_press
+
+    def deltas(self) -> tuple[float, float, float, float]:
+        dx = self.step_size if self.key_states["x_pos"] else 0.0
+        dx -= self.step_size if self.key_states["x_neg"] else 0.0
+        dy = self.step_size if self.key_states["y_pos"] else 0.0
+        dy -= self.step_size if self.key_states["y_neg"] else 0.0
+        dz = -self.step_size if self.key_states["z_up"] else 0.0
+        dz += self.step_size if self.key_states["z_down"] else 0.0
+        dgrip = self.grip_step_size if self.key_states["grip_close"] else 0.0
+        dgrip -= self.grip_step_size if self.key_states["grip_open"] else 0.0
+        return dx, dy, dz, dgrip
+
+    def reset(self):
+        for key in self.key_states:
+            self.key_states[key] = False
+        self.quit_requested = False
+
+    def has_input(self) -> bool:
+        return any(self.key_states.values())
+
+
+class CameraController:
+    def __init__(self, window, model, scene, cam):
+        self.window = window
+        self.model = model
+        self.scene = scene
+        self.cam = cam
+        self.lastx = 0.0
+        self.lasty = 0.0
+        self.button_left = False
+        self.button_middle = False
+        self.button_right = False
+
+    def start(self):
+        glfw.set_cursor_pos_callback(self.window, self._mouse_move)
+        glfw.set_mouse_button_callback(self.window, self._mouse_button)
+        glfw.set_scroll_callback(self.window, self._scroll)
+
+    def stop(self):
+        if self.window:
+            glfw.set_cursor_pos_callback(self.window, None)
+            glfw.set_mouse_button_callback(self.window, None)
+            glfw.set_scroll_callback(self.window, None)
+
+    def _mouse_button(self, window, button, act, mods):
+        is_press = act == glfw.PRESS
+        if button == glfw.MOUSE_BUTTON_LEFT:
+            self.button_left = is_press
+        elif button == glfw.MOUSE_BUTTON_MIDDLE:
+            self.button_middle = is_press
+        elif button == glfw.MOUSE_BUTTON_RIGHT:
+            self.button_right = is_press
+        self.lastx, self.lasty = glfw.get_cursor_pos(window)
+
+    def _mouse_move(self, window, xpos, ypos):
+        if not (self.button_left or self.button_middle or self.button_right):
+            self.lastx, self.lasty = xpos, ypos
+            return
+
+        dx = xpos - self.lastx
+        dy = ypos - self.lasty
+        self.lastx, self.lasty = xpos, ypos
+
+        height, width = glfw.get_framebuffer_size(window)
+        if height <= 0 or width <= 0:
+            return
+
+        if self.button_right:
+            action = mujoco.mjtMouse.mjMOUSE_MOVE_H
+        elif self.button_middle:
+            action = mujoco.mjtMouse.mjMOUSE_ZOOM
+        else:
+            shift = (
+                glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
+                or glfw.get_key(window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS
+            )
+            action = mujoco.mjtMouse.mjMOUSE_MOVE_H if shift else mujoco.mjtMouse.mjMOUSE_ROTATE_H
+
+        mujoco.mjv_moveCamera(self.model, action, dx / height, dy / height, self.scene, self.cam)
+
+    def _scroll(self, window, xoffset, yoffset):
+        mujoco.mjv_moveCamera(
+            self.model,
+            mujoco.mjtMouse.mjMOUSE_ZOOM,
+            0.0,
+            -0.05 * yoffset,
+            self.scene,
+            self.cam,
+        )
+
+
 def _print_keyboard_help(joint_names: list[str], step_size: float) -> None:
     names = ", ".join(f"{i + 1}:{name}" for i, name in enumerate(joint_names))
     key_limit = min(len(joint_names), 9)
@@ -135,8 +294,22 @@ def _print_keyboard_help(joint_names: list[str], step_size: float) -> None:
         f"  1-{key_limit}: select joint ({names})\n"
         "  ↑ ↓: joint +/-\n"
         "  [ and ]: step size down/up\n"
+        "  Mouse: LMB rotate, RMB pan, scroll zoom\n"
         "  Esc: quit\n"
         f"Current step size: {step_size}\n"
+    )
+
+
+def _print_claw_machine_help(step_size: float, grip_step_size: float) -> None:
+    print(
+        "\nControls (Viewer window must be focused)\n"
+        "  W/S: move in +Y/-Y\n"
+        "  A/D: move in -X/+X\n"
+        "  Q/E: move up/down (Z)\n"
+        "  [ and ]: close/open gripper\n"
+        "  Mouse: LMB rotate, RMB pan, scroll zoom\n"
+        "  Esc: quit\n"
+        f"Step size: {step_size} (grip step: {grip_step_size})\n"
     )
 
 
@@ -155,6 +328,19 @@ def _parse_stdin_joint_command(line: str, joint_count: int) -> np.ndarray | None
     except ValueError:
         return None
     if values.shape[0] != joint_count:
+        return None
+    return values
+
+
+def _parse_stdin_xyz_command(line: str) -> np.ndarray | None:
+    parts = line.strip().split()
+    if len(parts) not in (3, 4):
+        return None
+    try:
+        values = np.asarray([float(v) for v in parts], dtype=np.float32)
+    except ValueError:
+        return None
+    if values.shape[0] not in (3, 4):
         return None
     return values
 
@@ -218,13 +404,80 @@ class SO101GymEnv(gym.Env):
         qpos = _extract_joint_positions(self._data, self._actuator_joint_ids)
         return {"agent_pos": qpos}
 
+
+class ClawMachineGymEnv(gym.Env):
+    metadata = {"render_modes": ["rgb_array"], "render_fps": 25}
+
+    def __init__(
+        self,
+        xml_path: str,
+        seed: int = 0,
+        control_dt: float = 0.05,
+        physics_dt: float = 0.002,
+    ):
+        self._model = mujoco.MjModel.from_xml_path(str(xml_path))
+        self._data = mujoco.MjData(self._model)
+        self._model.opt.timestep = physics_dt
+        self._control_dt = control_dt
+        self._n_substeps = max(1, int(round(control_dt / physics_dt)))
+        self._random = np.random.RandomState(seed)
+
+        self._actuator_joint_ids = [int(joint_id) for joint_id in self._model.actuator_trnid[:, 0]]
+        ctrl_range = self._model.actuator_ctrlrange.copy()
+        low = ctrl_range[:, 0].astype(np.float32)
+        high = ctrl_range[:, 1].astype(np.float32)
+        self.action_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
+
+        obs_dim = len(self._actuator_joint_ids)
+        self.observation_space = gym.spaces.Dict(
+            {"agent_pos": gym.spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)}
+        )
+
+    @property
+    def model(self):
+        return self._model
+
+    @property
+    def data(self):
+        return self._data
+
+    def reset(self, seed=None, **kwargs):
+        super().reset(seed=seed)
+        mujoco.mj_resetData(self._model, self._data)
+        self._data.qpos[:] = self._model.qpos0
+        self._data.qvel[:] = 0.0
+        self._data.ctrl[:] = 0.0
+        mujoco.mj_forward(self._model, self._data)
+        return self._compute_observation(), {}
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape[0] != self.action_space.shape[0]:
+            action = action[: self.action_space.shape[0]]
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        self._data.ctrl[:] = action
+        for _ in range(self._n_substeps):
+            mujoco.mj_step(self._model, self._data)
+        return self._compute_observation(), 0.0, False, False, {}
+
+    def _compute_observation(self):
+        qpos = _extract_joint_positions(self._data, self._actuator_joint_ids)
+        return {"agent_pos": qpos}
+
 def main():
-    parser = argparse.ArgumentParser(description="Control SO-ARM101 robotic arm interactively")
+    parser = argparse.ArgumentParser(description="Control robot environments interactively")
     parser.add_argument("--step-size", type=float, default=0.01, help="Step size for joint movement")
     parser.add_argument(
         "--render-mode", type=str, default="human", choices=["human", "rgb_array"], help="Rendering mode"
     )
     parser.add_argument("--use-keyboard", action="store_true", help="Use keyboard control")
+    parser.add_argument(
+        "--env",
+        type=str,
+        default="franka",
+        choices=["franka", "so-101", "claw-machine"],
+        help="Environment to control with keyboard",
+    )
     parser.add_argument(
         "--reset-delay",
         type=float,
@@ -235,98 +488,200 @@ def main():
         "--controller-config", type=str, default=None, help="Path to controller configuration JSON file"
     )
     parser.add_argument(
-        "--stdin-control",
+        "--so-101-stdin",
         action="store_true",
-        help="Accept absolute joint positions (radians) from stdin lines",
+        help="Accept absolute SO-101 joint positions (radians) from stdin lines",
+    )
+    parser.add_argument(
+        "--claw-stdin",
+        action="store_true",
+        help="Accept absolute claw positions from stdin lines: joint_x joint_y joint_z [joint_grip]",
     )
     args = parser.parse_args()
+    if args.so_101_stdin and args.env != "so-101":
+        print("Warning: --so-101-stdin is ignored unless --env so-101 is set.")
+    if args.claw_stdin and args.env != "claw-machine":
+        print("Warning: --claw-stdin is ignored unless --env claw-machine is set.")
 
     # Mode selection based on --use-keyboard flag
     if args.use_keyboard:
         # MANUAL KEYBOARD CONTROL (runs with `python`)
         print("Running in MANUAL KEYBOARD mode. This can be run with the standard `python` interpreter.")
-        
-        # Create the BASE environment for SO-ARM101 without any rendering wrappers
-        env_id = register_so101_env()
-        env = gym.make(env_id, xml_path=str(SO101_SCENE_PATH), max_episode_steps=5000)
-        model = env.unwrapped.model
-        data = env.unwrapped.data
-        obs, _ = env.reset()
-        joint_ranges, joint_names = _joint_ranges_and_names(model)
-        actuator_joint_ids = env.unwrapped._actuator_joint_ids
-        action_dim = int(env.action_space.shape[0])
-        if len(joint_ranges) < action_dim:
-            joint_ranges = list(joint_ranges) + [(-1.0, 1.0)] * (action_dim - len(joint_ranges))
-            joint_names = list(joint_names) + [
-                f"joint_{i}" for i in range(len(joint_names), action_dim)
-            ]
-        else:
-            joint_ranges = joint_ranges[:action_dim]
-            joint_names = joint_names[:action_dim]
 
         # Initialize the viewer and controller manually
         glfw.init()
         window = glfw.create_window(1280, 720, "HIL Teleoperation (Manual Keyboard Mode)", None, None)
         glfw.make_context_current(window)
         glfw.swap_interval(1)
-        
-        controller = SO101KeyboardController(
-            window,
-            step_size=args.step_size,
-            joint_count=action_dim,
-        )
+
+        if args.env == "so-101":
+            env_id = register_so101_env()
+            env = gym.make(env_id, xml_path=str(SO101_SCENE_PATH), max_episode_steps=5000)
+            model = env.unwrapped.model
+            data = env.unwrapped.data
+            obs, _ = env.reset()
+            joint_ranges, joint_names = _joint_ranges_and_names(model)
+            actuator_joint_ids = env.unwrapped._actuator_joint_ids
+            action_dim = int(env.action_space.shape[0])
+            if len(joint_ranges) < action_dim:
+                joint_ranges = list(joint_ranges) + [(-1.0, 1.0)] * (action_dim - len(joint_ranges))
+                joint_names = list(joint_names) + [
+                    f"joint_{i}" for i in range(len(joint_names), action_dim)
+                ]
+            else:
+                joint_ranges = joint_ranges[:action_dim]
+                joint_names = joint_names[:action_dim]
+
+            controller = SO101KeyboardController(
+                window,
+                step_size=args.step_size,
+                joint_count=action_dim,
+            )
+        elif args.env == "claw-machine":
+            env_id = register_claw_machine_env()
+            env = gym.make(env_id, xml_path=str(CLAW_MACHINE_SCENE_PATH), max_episode_steps=1000000)
+            model = env.unwrapped.model
+            data = env.unwrapped.data
+            obs, _ = env.reset()
+            joint_ranges, joint_names = _joint_ranges_and_names(model)
+            actuator_joint_ids = env.unwrapped._actuator_joint_ids
+            action_dim = int(env.action_space.shape[0])
+            joint_ranges = joint_ranges[:action_dim]
+            controller = ClawMachineKeyboardController(
+                window,
+                step_size=args.step_size,
+                grip_step_size=max(args.step_size * 0.5, 0.001),
+            )
+        else:
+            env = gym.make("gym_hil/PandaPickCubeBase-v0", max_episode_steps=5000)
+            model = env.unwrapped.model
+            data = env.unwrapped.data
+            obs, _ = env.reset()
+            controller = MuJoCoViewerController(
+                window,
+                x_step_size=args.step_size,
+                y_step_size=args.step_size,
+                z_step_size=args.step_size,
+            )
 
         # Setup MuJoCo rendering
         cam = mujoco.MjvCamera()
         opt = mujoco.MjvOption()
         scene = mujoco.MjvScene(model, maxgeom=10000)
         context = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150)
+        camera_controller = CameraController(window, model, scene, cam)
         
         mujoco.mjv_defaultCamera(cam)
-        cam.azimuth = 90
-        cam.elevation = -30
-        cam.distance = 0.8
-        cam.lookat = np.array([0.0, 0.0, 0.15])
-        _print_keyboard_help(joint_names, args.step_size)
-        if args.stdin_control:
-            print(
-                "STDIN control enabled. Send lines like:\n"
-                "  J <t_ms> <q1> <q2> ... <qN>\n"
-                "or:\n"
-                "  J <q1> <q2> ... <qN>\n"
-                "Values are absolute joint positions in radians."
-            )
+        if args.env == "so-101":
+            cam.azimuth = 90
+            cam.elevation = -30
+            cam.distance = 0.8
+            cam.lookat = np.array([0.0, 0.0, 0.15])
+            _print_keyboard_help(joint_names, args.step_size)
+            if args.so_101_stdin:
+                print(
+                    "STDIN control enabled. Send lines like:\n"
+                    "  J <t_ms> <q1> <q2> ... <qN>\n"
+                    "or:\n"
+                    "  J <q1> <q2> ... <qN>\n"
+                    "Values are absolute joint positions in radians."
+                )
+        elif args.env == "claw-machine":
+            cam.azimuth = 180
+            cam.elevation = -30
+            cam.distance = 4
+            cam.lookat = np.array([0.0, 0.0, 0.6])
+            _print_claw_machine_help(args.step_size, max(args.step_size * 0.5, 0.001))
+            if args.claw_stdin:
+                print(
+                    "STDIN control enabled. Send lines like:\n"
+                    "  <joint_x> <joint_y> <joint_z> [joint_grip]\n"
+                    "Values are absolute positions in meters (grip in meters)."
+                )
+        else:
+            cam.azimuth = 90
+            cam.elevation = -35
+            cam.distance = 1.5
+            cam.lookat = np.array([0.45, 0, 0.3])
+            print("\nControls (Viewer window must be focused)\n"
+                  "  ↑ ↓ ← →          move end-effector in X / Y\n"
+                  "  L-Shift/R-Shift  move down/up\n"
+                  "  L-Ctrl/R-Ctrl    close/open gripper\n"
+                  "  Mouse: LMB rotate, RMB pan, scroll zoom\n")
 
         try:
             controller.start()
+            camera_controller.start()
             last_action = None
-            while not glfw.window_should_close(window) and not controller.quit_requested:
-                if last_action is None:
-                    last_action = _extract_joint_positions(data, actuator_joint_ids)
-                action = np.asarray(last_action, dtype=np.float32)
-                if action.shape[0] < action_dim:
-                    action = np.pad(action, (0, action_dim - action.shape[0]))
+            last_claw_target = None
+            last_claw_grip = None
+            while not glfw.window_should_close(window) and not (
+                args.env in ("so-101", "claw-machine") and controller.quit_requested
+            ):
+                if args.env == "so-101":
+                    if last_action is None:
+                        last_action = _extract_joint_positions(data, actuator_joint_ids)
+                    action = np.asarray(last_action, dtype=np.float32)
+                    if action.shape[0] < action_dim:
+                        action = np.pad(action, (0, action_dim - action.shape[0]))
 
-                if args.stdin_control:
-                    ready, _, _ = select.select([sys.stdin], [], [], 0.0)
-                    if ready:
-                        line = sys.stdin.readline()
-                        stdin_action = _parse_stdin_joint_command(line, action_dim)
-                        if stdin_action is not None:
-                            action = stdin_action
-                            last_action = action
-                            action = _clamp_action(action, joint_ranges)
+                    if args.so_101_stdin:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.0)
+                        if ready:
+                            line = sys.stdin.readline()
+                            stdin_action = _parse_stdin_joint_command(line, action_dim)
+                            if stdin_action is not None:
+                                action = stdin_action
+                                last_action = action
+                                action = _clamp_action(action, joint_ranges)
+                            else:
+                                action = _clamp_action(action, joint_ranges)
                         else:
                             action = _clamp_action(action, joint_ranges)
-                    else:
-                        action = _clamp_action(action, joint_ranges)
-                
-                if not args.stdin_control:
-                    delta = controller.delta()
-                    if delta != 0.0:
-                        action = _apply_joint_delta(action, controller.joint_index, delta, joint_ranges)
-                    else:
-                        action = _clamp_action(action, joint_ranges)
+
+                    if not args.so_101_stdin:
+                        delta = controller.delta()
+                        if delta != 0.0:
+                            action = _apply_joint_delta(action, controller.joint_index, delta, joint_ranges)
+                        else:
+                            action = _clamp_action(action, joint_ranges)
+                elif args.env == "claw-machine":
+                    current_qpos = _extract_joint_positions(data, actuator_joint_ids)
+                    action = np.asarray(current_qpos, dtype=np.float32)
+                    if action.shape[0] < action_dim:
+                        action = np.pad(action, (0, action_dim - action.shape[0]))
+
+                    if args.claw_stdin:
+                        if last_claw_target is None:
+                            last_claw_target = current_qpos[:3].copy()
+                        if last_claw_grip is None:
+                            last_claw_grip = float(current_qpos[3])
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.0)
+                        if ready:
+                            line = sys.stdin.readline()
+                            stdin_target = _parse_stdin_xyz_command(line)
+                            if stdin_target is not None:
+                                last_claw_target = stdin_target[:3]
+                                if stdin_target.shape[0] == 4:
+                                    last_claw_grip = float(stdin_target[3])
+                        if last_claw_target is not None:
+                            action[:3] = last_claw_target
+                        if last_claw_grip is not None:
+                            action[3] = last_claw_grip
+
+                    if controller.has_input():
+                        dx, dy, dz, dgrip = controller.deltas()
+                        ranges = [high - low for low, high in joint_ranges[:4]]
+                        if not args.claw_stdin:
+                            action[0] += dx * ranges[0]
+                            action[1] += dy * ranges[1]
+                            action[2] += dz * ranges[2]
+                        action[3] += dgrip * ranges[3]
+                    action = _clamp_action(action, joint_ranges)
+                else:
+                    dx, dy, dz = controller.get_deltas()
+                    grip_action = gripper_scalar(controller.gripper_command())
+                    action = np.array([dx, dy, dz, 0, 0, 0, grip_action], dtype=np.float32)
 
                 obs, reward, terminated, truncated, info = env.step(action.tolist())
                 last_action = action
@@ -348,6 +703,7 @@ def main():
             print("\nInterrupted by user")
         finally:
             controller.stop()
+            camera_controller.stop()
             env.close()
             glfw.terminate()
             print("Session ended")

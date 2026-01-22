@@ -1,0 +1,98 @@
+<mujoco model="claw_machine">
+	<compiler angle="radian" coordinate="local" />
+
+	<option timestep="0.002" gravity="0 0 -9.81" iterations="80" solver="Newton" />
+
+	<default>
+		<geom contype="1" conaffinity="1" density="500" margin="0.001" rgba="0.8 0.8 0.8 1" />
+		<joint damping="6" armature="0.02" />
+	</default>
+
+	<asset>
+		<material name="dark_grey" rgba="0.2 0.2 0.2 1" />
+		<material name="red" rgba="0.8 0.1 0.1 1" />
+		<material name="green" rgba="0.1 0.8 0.1 1" />
+		<material name="blue" rgba="0.1 0.1 0.8 1" />
+		<material name="white" rgba="0.9 0.9 0.9 1" />
+	</asset>
+
+	<worldbody>
+		<body name="frame_structure" pos="0 0 0">
+			<geom type="box" pos=" 1.0  1.0 0.75" size="0.05 0.05 0.75" material="dark_grey" />
+			<geom type="box" pos=" 1.0 -1.0 0.75" size="0.05 0.05 0.75" material="dark_grey" />
+			<geom type="box" pos="-1.0  1.0 0.75" size="0.05 0.05 0.75" material="dark_grey" />
+			<geom type="box" pos="-1.0 -1.0 0.75" size="0.05 0.05 0.75" material="dark_grey" />
+
+			<geom type="box" pos="0  1.0 1.5" size="1.05 0.05 0.05" material="dark_grey" />
+			<geom type="box" pos="0 -1.0 1.5" size="1.05 0.05 0.05" material="dark_grey" />
+			<geom type="box" pos=" 1.0 0 1.5" size="0.05 1.0 0.05" material="dark_grey" />
+			<geom type="box" pos="-1.0 0 1.5" size="0.05 1.0 0.05" material="dark_grey" />
+
+			<body name="x_bridge" pos="0 0 1.55">
+				<joint name="joint_x" type="slide" axis="1 0 0" range="-0.85 0.85" />
+				<geom type="box" pos="0 0 0" size="0.075 1.1 0.025" material="red" density="200" />
+
+				<body name="y_carriage" pos="0 0 0.05">
+					<joint name="joint_y" type="slide" axis="0 1 0" range="-0.9 0.9"
+						damping="18" frictionloss="2.0" armature="0.06" />
+					<geom type="box" pos="0 0 0" size="0.075 0.075 0.025" material="green" density="200" />
+
+					<body name="z_plunger" pos="0 0 0.8" gravcomp="1">
+						<joint name="joint_z" type="slide" axis="0 0 -1" range="0 1.10"
+							damping="24" frictionloss="3.0" armature="0.08" />
+
+						<geom type="cylinder" pos="0 0 -0.3" size="0.04 0.8" material="blue" density="200" />
+
+						<body name="gripper_palm" pos="0 0 -1.1" gravcomp="1" euler="0 0 1.5708">
+							<geom type="box" pos="0 0 0" size="0.125 0.025 0.025" material="white" density="200" />
+
+							<body name="left_finger" pos="-0.115 0 0" gravcomp="1">
+								<geom type="box" pos="0 0 -0.1" size="0.01 0.025 0.1"
+									material="white" friction="1.5 0.01 0.0001" density="200" />
+							</body>
+
+							<body name="right_finger" pos="0.115 0 0" gravcomp="1">
+								<joint name="joint_gripper" type="slide" axis="-1 0 0" range="0 0.105"
+									damping="8" frictionloss="0.5" armature="0.02" />
+								<geom type="box" pos="0 0 -0.1" size="0.01 0.025 0.1"
+									material="white" friction="1.5 0.01 0.0001" density="200" />
+							</body>
+
+						</body>
+					</body>
+				</body>
+			</body>
+		</body>
+	</worldbody>
+
+	<contact>
+		<exclude body1="frame_structure" body2="x_bridge" />
+		<exclude body1="x_bridge" body2="y_carriage" />
+		<exclude body1="y_carriage" body2="z_plunger" />
+		<exclude body1="z_plunger" body2="gripper_palm" />
+		<exclude body1="gripper_palm" body2="left_finger" />
+		<exclude body1="gripper_palm" body2="right_finger" />
+	</contact>
+
+	<actuator>
+		<position name="ax_x" joint="joint_x"
+			kp="3000" kv="2400"
+			ctrlrange="-0.85 0.85" forcerange="-900 900" />
+
+		<position name="ax_y" joint="joint_y"
+			kp="900" kv="220"
+			ctrlrange="-0.9 0.9" forcerange="-1400 1400" />
+
+		<position name="ax_z" joint="joint_z"
+			kp="1700" kv="260"
+			ctrlrange="0 1.10" forcerange="-1800 1800" />
+
+		<position name="ax_grip" joint="joint_gripper"
+			kp="350" kv="60"
+			ctrlrange="0 0.105" forcerange="-300 300" />
+	</actuator>
+
+	<keyframe>
+		<key name="home" qpos="0 0 0 0" />
+	</keyframe>
+</mujoco>
