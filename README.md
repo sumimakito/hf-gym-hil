@@ -1,9 +1,16 @@
-# gym-hil for SO-ARM101
+# gym-hil for SO-101 arm and a custom Claw Machine environment
 
 ## Control with keyboard on macOS
 
 ```bash
-python examples/test_teleoperation.py --use-keyboard
+python examples/test_teleoperation.py --use-keyboard --env so-101
+python examples/test_teleoperation.py --use-keyboard --env claw-machine
+```
+
+## Control with STDIN
+
+```bash
+python examples/test_teleoperation.py --use-keyboard --env claw-machine --claw-stdin
 ```
 
 ---
